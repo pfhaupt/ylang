@@ -1,0 +1,3 @@
+let zx = f(g, x, s) while s * g(x) < 0 x = x + s
+let s = f(x)x*x-137
+zx(s, 10, 1)
