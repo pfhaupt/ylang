@@ -61,11 +61,12 @@ enum AST<'s> {
     Number(Token<'s>),
     StrLit(Token<'s>),
     Ident(Token<'s>),
-    FuncCall(Box<AST<'s>>, Vec<AST<'s>>), // func, args
+    FuncCall(Box<AST<'s>>, Box<AST<'s>>), // func, args
     FuncDecl(Vec<Token<'s>>, Box<AST<'s>>), // params, body
     VarDecl(Token<'s>, Option<Box<AST<'s>>>), // name, val
     BinExpr(Token<'s>, Box<AST<'s>>, Box<AST<'s>>), // op, lhs, rhs
     While(Box<AST<'s>>, Box<AST<'s>>), // condition, body
+    ListDecl(Vec<AST<'s>>),
 }
 
 impl<'s> std::fmt::Display for AST<'s> {
@@ -76,26 +77,27 @@ impl<'s> std::fmt::Display for AST<'s> {
                 for b in block {
                     res.push_str(&format!("{} ", b));
                 }
-                write!(f, "{{ {res}}}")
+                write!(f, "{{ {res} }}")
             }
             Self::Number(n) => write!(f, "{n}"),
             Self::StrLit(s) => write!(f, "{s}"),
             Self::Ident(i) => write!(f, "{i}"),
-            Self::FuncCall(func, args) => write!(f, "{func}({0})", args.iter().map(|a|format!("{a}")).collect::<Vec<_>>().join(", ")),
+            Self::FuncCall(func, args) => write!(f, "{func}{args}"),
             Self::FuncDecl(param, body) => write!(f, "f({0}) {{ {body} }}", param.iter().map(|t|format!("{t}")).collect::<Vec<_>>().join(", ")),
             Self::VarDecl(name, Some(val)) => write!(f, "let {name} = {val}"),
             Self::VarDecl(name, None) => write!(f, "let {name} = <undefined>"),
             Self::BinExpr(op, lhs, rhs) => write!(f, "{lhs} {op} {rhs}"),
             Self::While(cond, body) => write!(f, "while {cond} {{ {body} }}"),
+            Self::ListDecl(elems) => write!(f, "({0})", elems.iter().map(|e|format!("{e}")).collect::<Vec<_>>().join(", ")),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Value<'s> {
-    Bool(bool),
     Number(i64),
     String(String),
+    List(Vec<Value<'s>>),
     Variable(&'s str),
     Func(&'s AST<'s>),
     Undefined
@@ -104,11 +106,11 @@ enum Value<'s> {
 impl<'s> std::fmt::Display for Value<'s> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Bool(b) => write!(f, "{b}"),
             Self::Number(n) => write!(f, "{n}"),
             Self::String(s) => write!(f, "\"{s}\""),
             Self::Variable(v) => write!(f, "{v}"),
             Self::Func(func) => write!(f, "{func}"),
+            Self::List(elems) => write!(f, "({0})", elems.iter().map(|e|format!("{e}")).collect::<Vec<_>>().join(", ")),
             Self::Undefined => write!(f, "<undefined>"),
         }
     }
@@ -133,6 +135,32 @@ impl<'s> Interpreter<'s> {
             return None
         };
         Some(Value::Variable(name))
+    }
+
+    fn run_function<'ast: 's>(&mut self, args: &Vec<Value<'s>>, params: &Vec<Token<'s>>, body: &'ast AST<'s>) -> Option<Value<'s>> {
+        // TODO: Inline small functions like `let and=f(a,b)a*b`
+        self.stack_depth += 1;
+        self.variables.push_back((self.stack_depth, HashMap::new()));
+        let curr_scope = self.get_current_scope();
+        for p in params {
+            let Token::Ident(p) = p else {
+                todo!() // Unreachable?
+            };
+            if curr_scope.insert(p, Value::Undefined).is_some() {
+                todo!()
+            }
+        }
+        for (a, p) in args.iter().zip(params) {
+            let Token::Ident(p) = p else {
+                todo!() // Unreachable?
+            };
+            curr_scope.insert(p, a.clone());
+        }
+        let res = self.run_node(body)?;
+        assert!(self.stack_depth != 0, "How did this happen?");
+        self.stack_depth -= 1;
+        self.variables.pop_back();
+        Some(res)
     }
 
     fn run_node<'ast: 's>(&mut self, node: &'ast AST<'s>) -> Option<Value<'s>> {
@@ -170,12 +198,59 @@ impl<'s> Interpreter<'s> {
                 };
                 let rhs_eval = self.run_node(&rhs)?;
                 match (tkn, lhs_eval, rhs_eval) {
+                    (_, Value::Undefined, _) | (_, _, Value::Undefined) => {
+                        println!("warning: Propagation of <undefined> at {node}");
+                        Some(Value::Undefined)
+                    },
                     (Token::Plus, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 + n2)),
-                    (Token::Minus, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 - n2)),
-                    (Token::Asterisk, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 * n2)),
                     (Token::Plus, Value::String(s1), Value::String(s2)) => Some(Value::String(s1.to_owned() + &s2)),
-                    (Token::OpenSharp, Value::Number(n1), Value::Number(n2)) => Some(Value::Bool(n1 < n2)),
-                    (Token::ClosingSharp, Value::Number(n1), Value::Number(n2)) => Some(Value::Bool(n1 > n2)),
+                    (Token::Plus, Value::List(elems), rhs) => {
+                        let mut new_elems = elems;
+                        new_elems.push(rhs);
+                        Some(Value::List(new_elems))
+                    }
+                    (Token::Minus, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 - n2)),
+                    (Token::Minus, Value::List(elems), rhs) => {
+                        let mut new_elems = Vec::new();
+                        for e in elems {
+                            if e != rhs {
+                                new_elems.push(e);
+                            }
+                        }
+                        Some(Value::List(new_elems))
+                    }
+                    (Token::Asterisk, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 * n2)),
+                    (Token::Asterisk, Value::List(elems), ref func @ Value::Func(AST::FuncDecl(params, body))) => {
+                        if params.len() != 1 {
+                            eprintln!("List map operator `{tkn}` requires predicate that takes in one parameter (the element), found {0}", func);
+                            return None;
+                        }
+                        let mut new_elems = Vec::new();
+                        for e in elems {
+                            let args = vec![e];
+                            let res = self.run_function(&args, &params, &body)?;
+                            new_elems.push(res);
+                        }
+                        Some(Value::List(new_elems))
+                    }
+                    (Token::Slash, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 / n2)),
+                    (Token::Slash, Value::List(elems), ref func @ Value::Func(AST::FuncDecl(params, body))) => {
+                        if params.len() != 1 {
+                            eprintln!("List filter operator `{tkn}` requires predicate that takes in one parameter (the element), found {0}", func);
+                            return None;
+                        }
+                        let mut new_elems = Vec::new();
+                        for e in elems {
+                            let args = vec![e.clone()];
+                            let res = self.run_function(&args, &params, &body)?;
+                            if res == Value::Number(1) {
+                                new_elems.push(e);
+                            }
+                        }
+                        Some(Value::List(new_elems))
+                    }
+                    (Token::OpenSharp, Value::Number(n1), Value::Number(n2)) => Some(Value::Number((n1 < n2) as i64)),
+                    (Token::ClosingSharp, Value::Number(n1), Value::Number(n2)) => Some(Value::Number((n1 > n2) as i64)),
                     (Token::Equal, Value::Variable(v), rhs_eval) => {
                         let Some(scope) = self.get_scope_of_variable(&v) else {
                             todo!() // Undeclared variable
@@ -203,7 +278,7 @@ impl<'s> Interpreter<'s> {
             }
             AST::While(cond, body) => {
                 let mut body_eval = Value::Undefined;
-                while self.run_node(&cond)? == Value::Bool(true) {
+                while self.run_node(&cond)? == Value::Number(1) {
                     body_eval = self.run_node(&body)?;
                 }
                 Some(body_eval)
@@ -220,32 +295,18 @@ impl<'s> Interpreter<'s> {
                 let AST::FuncDecl(params, body) = func else {
                     unreachable!()
                 };
-                let mut eval_args = Vec::new();
-                for a in args {
-                    eval_args.push(self.run_node(a)?);
+                let Value::List(args) = self.run_node(&args)? else {
+                    unreachable!()
+                };
+                self.run_function(&args, &params, &body)
+            }
+            AST::ListDecl(elems) => {
+                let mut eval_elems = Vec::new();
+                for e in elems {
+                    let e = self.run_node(e)?;
+                    eval_elems.push(e);
                 }
-                self.stack_depth += 1;
-                self.variables.push_back((self.stack_depth, HashMap::new()));
-                let curr_scope = self.get_current_scope();
-                for p in params {
-                    let Token::Ident(p) = p else {
-                        todo!() // Unreachable?
-                    };
-                    if curr_scope.insert(p, Value::Undefined).is_some() {
-                        todo!()
-                    }
-                }
-                for (a, p) in eval_args.iter().zip(params) {
-                    let Token::Ident(p) = p else {
-                        todo!() // Unreachable?
-                    };
-                    curr_scope.insert(p, a.clone());
-                }
-                let res = self.run_node(body)?;
-                assert!(self.stack_depth != 0, "How did this happen?");
-                self.stack_depth -= 1;
-                self.variables.pop_back();
-                Some(res)
+                Some(Value::List(eval_elems))
             }
             n => todo!("{:?}", n)
         }
@@ -253,8 +314,12 @@ impl<'s> Interpreter<'s> {
 
     fn get_scope_of_variable(&mut self, var_name: &str) -> Option<&mut HashMap<&'s str, Value<'s>>> {
         for scope in self.variables.iter_mut().rev() {
-            if scope.0 == self.stack_depth && scope.1.contains_key(var_name) {
-                return Some(&mut scope.1);
+            if let Some(v) = scope.1.get(var_name) {
+                if let Value::Func(_) = v {
+                    return Some(&mut scope.1);
+                } else if scope.0 == self.stack_depth {
+                    return Some(&mut scope.1);
+                }
             }
         }
         None
@@ -288,6 +353,7 @@ impl<'s> Parser<'s> {
         if let Token::Ident(_) = pot {
             Some(pot)
         } else {
+            eprintln!("Expected identifier, found `{pot}`");
             None
         }
     }
@@ -389,7 +455,21 @@ impl<'s> Parser<'s> {
             None
         };
         Some(AST::VarDecl(name, val))
-     }
+    }
+
+    fn parse_list(&mut self) -> Option<AST<'s>> {
+        self.expect(&[Token::OpenParen])?;
+        let mut elems = Vec::new();
+        while !self.at(&[Token::ClosingParen]) {
+            let e = self.parse_expr()?;
+            elems.push(e);
+            if !self.at(&[Token::ClosingParen]) {
+                self.expect(&[Token::Comma])?;
+            }
+        }
+        self.expect(&[Token::ClosingParen])?;
+        Some(AST::ListDecl(elems))
+    }
 
     fn parse_fn(&mut self) -> Option<AST<'s>> {
         self.expect(&[Token::Keyword("f")])?;
@@ -427,22 +507,15 @@ impl<'s> Parser<'s> {
             Token::Ident(_) => AST::Ident(self.next_token().unwrap()),
             Token::StrLit(_) => AST::StrLit(self.next_token().unwrap()),
             Token::OpenCurly => self.parse_block()?,
+            Token::OpenParen => self.parse_list()?,
             e => {
                 eprintln!("parse_expr: Unexpected token {e}");
                 return None;
             }
         };
-        if self.eat(Token::OpenParen) {
-            let mut args = Vec::new();
-            while !self.at(&[Token::ClosingParen]) {
-                let arg = self.parse_expr()?;
-                args.push(arg);
-                if !self.at(&[Token::ClosingParen]) {
-                    self.expect(&[Token::Comma])?;
-                }
-            }
-            self.expect(&[Token::ClosingParen])?;
-            lhs = AST::FuncCall(Box::new(lhs), args);
+        if self.at(&[Token::OpenParen]) {
+            let args = self.parse_list()?;
+            lhs = AST::FuncCall(Box::new(lhs), Box::new(args));
         }
         while self.matches_binary() {
             let tkn = self.peek_token()?;
@@ -513,13 +586,13 @@ impl<'s> Lexer<'s> {
                 return None;
             }
         }
-        let t = if self.content.starts_with(|c:char|c.is_alphabetic()||c=='_') {
+        let t = if self.content.starts_with(char::is_alphabetic) {
             let mut len = 0;
             let mut tmp = self.content;
-            while tmp.starts_with(|c:char|c.is_alphabetic()||c=='_') {
+            while tmp.starts_with(char::is_alphabetic) {
                 len += 1;
                 tmp = &tmp[1..];
-            }    
+            }
             let word = &self.content[0..len];
             self.ptr += len;
             self.content = tmp;
@@ -619,6 +692,7 @@ fn main() {
             let mut lexer = Lexer::new(&file);
             let mut parser = Parser::new(&mut lexer);
             let mut interpreter = Interpreter::new();
+            // TODO: Add Bytecode interpreter? :o
             if let Some(program) = parser.parse_program() {
                 println!("Block:\n{program}");
                 let Some(result) = interpreter.run_block(&program) else {
@@ -626,6 +700,8 @@ fn main() {
                     std::process::exit(1)
                 };
                 println!("Result: {}", result);
+            } else {
+                println!("Could not parse program.");
             }
         },
         Err(e) => {
