@@ -11,14 +11,13 @@ let isOdd = f(x)not(isEven(x))
 let mod = f(a,b)if(a<b,a,a-{a/b*b})
 let isPrime = f(n) {
   let c = 3
-  let isnt = and(not(eq(mod(n,4),0)),n>1)
-  while and(isnt,c<n) {
+  let isnt = or(eq(n,2),and(not(eq(mod(n,2),0)),n>1))
+  while and(isnt,not(c*c>n)) {
     isnt = mod(n,c)>0
     c = c + 2
   }
   isnt
 }
-let list = ()
-let c = 0
-while c < 500 { list = list + c c = c + 1 }
-list/isPrime
+let limit = 50000
+let listSlow = limit*{f(i)if(isPrime(i),i,0)}/f(n)not(eq(n,0))
+let listFast = {limit*f(i)i}/isPrime

@@ -220,6 +220,24 @@ impl<'s> Interpreter<'s> {
                         Some(Value::List(new_elems))
                     }
                     (Token::Asterisk, Value::Number(n1), Value::Number(n2)) => Some(Value::Number(n1 * n2)),
+                    (Token::Asterisk, Value::Number(n), ref func @ Value::Func(AST::FuncDecl(params, body))) => {
+                        if params.len() != 1 {
+                            eprintln!("Operation `<number> {tkn} <func>` requires predicate that takes in one parameter (the index), found {0}", func);
+                            return None;
+                        }
+                        if n < 0 {
+                            eprintln!("Operation `<number> {tkn} <func>` requires positive number (the amount of elements in the created list), found {0}.", n);
+                            return None;
+                        }
+                        let n = n as usize;
+                        let mut new_elems = vec![Value::Undefined; n];
+                        let mut args = vec![Value::Undefined];
+                        for i in 0..n {
+                            args[0] = Value::Number(i as i64);
+                            new_elems[i] = self.run_function(&args, &params, &body)?;
+                        }
+                        Some(Value::List(new_elems))
+                    }
                     (Token::Asterisk, Value::List(elems), ref func @ Value::Func(AST::FuncDecl(params, body))) => {
                         if params.len() != 1 {
                             eprintln!("List map operator `{tkn}` requires predicate that takes in one parameter (the element), found {0}", func);
