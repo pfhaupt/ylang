@@ -107,7 +107,7 @@ impl<'s> std::fmt::Display for Value<'s> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Number(n) => write!(f, "{n}"),
-            Self::String(s) => write!(f, "\"{s}\""),
+            Self::String(s) => write!(f, "{s}"),
             Self::Variable(v) => write!(f, "{v}"),
             Self::Func(func) => write!(f, "{func}"),
             Self::List(elems) => write!(f, "({0})", elems.iter().map(|e|format!("{e}")).collect::<Vec<_>>().join(", ")),
@@ -305,18 +305,31 @@ impl<'s> Interpreter<'s> {
                 Some(Value::Func(&node))
             }
             AST::FuncCall(func, args) => {
-                let f = self.run_node(func)?;
-                let Value::Func(func) = f else {
-                    eprintln!("Expected function value for function call, got `{f}");
-                    return None;
-                };
-                let AST::FuncDecl(params, body) = func else {
-                    unreachable!()
-                };
                 let Value::List(args) = self.run_node(&args)? else {
                     unreachable!()
                 };
-                self.run_function(&args, &params, &body)
+                if let AST::Ident(Token::Ident(maybe_intrinsic)) = &**func {
+                    match maybe_intrinsic {
+                        &"print" => {
+                            let v = args.iter().map(|a|format!("{a}")).collect::<Vec<_>>().join(", ");
+                            println!("{v}");
+                            Some(Value::Undefined)
+                        },
+                        _ => {
+                            let f = self.run_node(func)?;
+                            let Value::Func(func) = f else {
+                                eprintln!("Expected function value for function call, got `{f}");
+                                return None;
+                            };
+                            let AST::FuncDecl(params, body) = func else {
+                                unreachable!()
+                            };
+                            self.run_function(&args, &params, &body)
+                        }
+                    }
+                } else {
+                    todo!()
+                }
             }
             AST::ListDecl(elems) => {
                 let mut eval_elems = Vec::new();
@@ -712,14 +725,14 @@ fn main() {
             let mut interpreter = Interpreter::new();
             // TODO: Add Bytecode interpreter? :o
             if let Some(program) = parser.parse_program() {
-                println!("Block:\n{program}");
                 let Some(result) = interpreter.run_block(&program) else {
                     eprintln!("error: Could not interpret the given program.");
                     std::process::exit(1)
                 };
-                println!("Result: {}", result);
+                println!("{result}");
             } else {
                 println!("Could not parse program.");
+                std::process::exit(1)
             }
         },
         Err(e) => {
