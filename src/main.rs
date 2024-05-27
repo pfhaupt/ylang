@@ -3,7 +3,7 @@ use std::env;
 use std::collections::{HashMap, VecDeque};
 
 const KEYWORDS: &[&str] = &["let", "f", "while", "use"];
-const INTRINSICS: &[&str] = &["print", "noa", "nel"];
+const INTRINSICS: &[&str] = &["print", "noa", "nel", "len"];
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Assoc {
@@ -30,6 +30,7 @@ enum Token<'s> {
     Slash,
     Asterisk,
     Comma,
+    Dot,
 }
 
 impl<'s> std::fmt::Display for Token<'s> {
@@ -51,6 +52,7 @@ impl<'s> std::fmt::Display for Token<'s> {
             Self::Slash => write!(f, "/"),
             Self::Asterisk => write!(f, "*"),
             Self::Comma => write!(f, ","),
+            Self::Dot => write!(f, "."),
         }
     }
 }
@@ -268,6 +270,27 @@ impl<'s> Interpreter<'s> {
                         }
                         Some(Value::List(new_elems))
                     }
+                    (Token::Slash, Value::String(orig), Value::List(elems)) => {
+                        let mut split_vals = Vec::with_capacity(elems.len());
+                        // REVIEW: This looks stupidly over-engineered
+                        for e in elems {
+                            let Value::String(sep) = e else {
+                                eprintln!("error: String splice operator `{tkn}` requires a list of single characters (the characters to split by), found `{0}`.", e);
+                                return None;
+                            };
+                            if sep.len() != 1 {
+                                eprintln!("error: String splice operator `{tkn}` requires a list of single characters (the characters to split by), found `{0}`.", sep);
+                                return None;
+                            };
+                            let mut sep = sep.chars();
+                            let c = sep.next().unwrap();
+                            assert!(sep.next().is_none());
+
+                            split_vals.push(c);
+                        }
+                        let res = orig.split(&*split_vals).filter(|e|e.len()!=0).map(|e|Value::String(e.to_string())).collect::<Vec<_>>();
+                        Some(Value::List(res))
+                    }
                     (Token::OpenSharp, Value::Number(n1), Value::Number(n2)) => Some(Value::Number((n1 < n2) as i64)),
                     (Token::ClosingSharp, Value::Number(n1), Value::Number(n2)) => Some(Value::Number((n1 > n2) as i64)),
                     (Token::Equal, Value::Variable(v), rhs_eval) => {
@@ -277,6 +300,13 @@ impl<'s> Interpreter<'s> {
                         scope.insert(v, rhs_eval.clone());
                         Some(rhs_eval)
                     },
+                    (Token::Dot, Value::List(elems), Value::Number(n)) => {
+                        if n < 0 || n >= elems.len() as i64 {
+                            eprintln!("error: Attempted to access invalid index {n} of length {} list.", elems.len());
+                            return None;
+                        }
+                        Some(elems[n as usize].clone())
+                    }
                     (t, l, r) => {
                         eprintln!("error: Operation `{l} {t} {r}` is not defined!");
                         None
@@ -307,6 +337,18 @@ impl<'s> Interpreter<'s> {
                     unreachable!()
                 };
                 if let AST::Ident(Token::Ident(maybe_intrinsic)) = &**func {
+                    macro_rules! check_args {
+                        ($vals:expr, $cnt:expr, $($exp:tt)*) => {
+                            if $vals.len() < $cnt {
+                                eprintln!("error: Intrinsic `{maybe_intrinsic}` requires at least {} argument(s), found {}.", $cnt, $vals.len());
+                                return None;
+                            }
+                            let $($exp)* = &$vals[$cnt - 1] else {
+                                eprintln!("error: Intrinsic `{maybe_intrinsic}` requires a special value as argument {}, got the wrong one. Oops.", $cnt);
+                                return None;
+                            };
+                        }
+                    }
                     match maybe_intrinsic {
                         &"print" => {
                             let v = args.iter().map(|a|format!("{a}")).collect::<Vec<_>>().join(" ");
@@ -314,26 +356,16 @@ impl<'s> Interpreter<'s> {
                             Some(Value::Undefined)
                         },
                         &"noa" => {
-                            if args.len() != 1 {
-                                eprintln!("Intrinsic `{maybe_intrinsic}` requires exactly one argument (a String), found {}.", args.len());
-                                return None;
-                            }
-                            let Value::String(arg) = &args[0] else {
-                                eprintln!("Intrinsic `{maybe_intrinsic}` requires a String as argument, found {}.", args[0]);
-                                return None;
-                            };
+                            check_args!(&args, 1, Value::String(arg));
                             Some(Value::Number(!arg.contains("a") as i64))
                         },
                         &"nel" => {
-                            if args.len() != 1 {
-                                eprintln!("Intrinsic `{maybe_intrinsic}` requires exactly one argument (a String), found {}.", args.len());
-                                return None;
-                            }
-                            let Value::String(arg) = &args[0] else {
-                                eprintln!("Intrinsic `{maybe_intrinsic}` requires a String as argument, found {}.", args[0]);
-                                return None;
-                            };
+                            check_args!(&args, 1, Value::String(arg));
                             Some(Value::Number((arg != "l") as i64))
+                        }
+                        &"len" => {
+                            check_args!(&args, 1, Value::List(arg));
+                            Some(Value::Number(arg.len() as i64))
                         }
                         name => {
                             assert!(!INTRINSICS.contains(name));
@@ -497,6 +529,7 @@ impl<'s> Parser<'s> {
 
     fn get_precedence(&self, tkn: &Token<'s>) -> u8 {
         match tkn {
+            Token::Dot => 13,
             Token::Slash => 12,
             Token::Asterisk => 12,
             Token::Plus => 11,
@@ -527,6 +560,7 @@ impl<'s> Parser<'s> {
                 Token::Equal => true,
                 Token::OpenSharp => true,
                 Token::ClosingSharp => true,
+                Token::Dot => true,
                 _ => false
             }
         }
@@ -771,6 +805,10 @@ impl<'s> Lexer<'s> {
             self.content = &self.content[1..];
             self.ptr += 1;
             Token::Comma
+        } else if self.content.starts_with('.') {
+            self.content = &self.content[1..];
+            self.ptr += 1;
+            Token::Dot
         } else {
             eprintln!("error: Unknown character `{0}` at byte {1}", &self.content[0..1], self.ptr);
             std::process::exit(1)
@@ -789,6 +827,7 @@ fn declare_intrinsics<'s>() -> Vec<(&'static str, AST<'s>)> {
     decl_intr.push(("print", empty_fn!()));
     decl_intr.push(("noa", empty_fn!()));
     decl_intr.push(("nel", empty_fn!()));
+    decl_intr.push(("len", empty_fn!()));
 
     for i in INTRINSICS {
         assert!(decl_intr.iter().find(|(n,_)|n==i).is_some(), "Could not find intrinsic `{i}` in declare_intrinsics()!");
@@ -926,7 +965,8 @@ fn main() {
             }
         },
         Err(e) => {
-            panic!("{}", e);
+            eprintln!("error: {}", e);
+            std::process::exit(1)
         }
     }
 }

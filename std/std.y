@@ -9,3 +9,5 @@ let eq = f(a,b)not(or(a>b,a<b))
 let isEven = f(x)eq(x/2*2,x)
 let isOdd = f(x)not(isEven(x))
 let mod = f(a,b)if(a<b,a,a-{a/b*b})
+
+undefined()

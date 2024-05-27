@@ -13,6 +13,8 @@ examples: build
 	${EP} ./ex/fn.y
 	${EP} ./ex/test.y
 	${EP} ./ex/use.y
+	${EP} ./ex/hello.y
+	${EP} ./ex/string.y
 
 build:
 	cargo build
