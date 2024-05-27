@@ -3,6 +3,7 @@ use std::env;
 use std::collections::{HashMap, VecDeque};
 
 const KEYWORDS: &[&str] = &["let", "f", "while"];
+const INTRINSICS: &[&str] = &["print", "noa", "nel"];
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Assoc {
@@ -288,10 +289,7 @@ impl<'s> Interpreter<'s> {
                 } else {
                     Value::Undefined
                 };
-                let current_scope = self.get_current_scope();
-                if current_scope.insert(name, rhs_eval.clone()).is_some() {
-                    todo!() // Do we wanna allow shadowing?
-                }
+                self.insert_variable(name, &rhs_eval)?;
                 Some(rhs_eval)
             }
             AST::While(cond, body) => {
@@ -311,14 +309,37 @@ impl<'s> Interpreter<'s> {
                 if let AST::Ident(Token::Ident(maybe_intrinsic)) = &**func {
                     match maybe_intrinsic {
                         &"print" => {
-                            let v = args.iter().map(|a|format!("{a}")).collect::<Vec<_>>().join(", ");
+                            let v = args.iter().map(|a|format!("{a}")).collect::<Vec<_>>().join(" ");
                             println!("{v}");
                             Some(Value::Undefined)
                         },
-                        _ => {
+                        &"noa" => {
+                            if args.len() != 1 {
+                                eprintln!("Intrinsic `{maybe_intrinsic}` requires exactly one argument (a String), found {}.", args.len());
+                                return None;
+                            }
+                            let Value::String(arg) = &args[0] else {
+                                eprintln!("Intrinsic `{maybe_intrinsic}` requires a String as argument, found {}.", args[0]);
+                                return None;
+                            };
+                            Some(Value::Number(!arg.contains("a") as i64))
+                        },
+                        &"nel" => {
+                            if args.len() != 1 {
+                                eprintln!("Intrinsic `{maybe_intrinsic}` requires exactly one argument (a String), found {}.", args.len());
+                                return None;
+                            }
+                            let Value::String(arg) = &args[0] else {
+                                eprintln!("Intrinsic `{maybe_intrinsic}` requires a String as argument, found {}.", args[0]);
+                                return None;
+                            };
+                            Some(Value::Number((arg != "l") as i64))
+                        }
+                        name => {
+                            assert!(!INTRINSICS.contains(name));
                             let f = self.run_node(func)?;
                             let Value::Func(func) = f else {
-                                eprintln!("Expected function value for function call, got `{f}");
+                                eprintln!("Expected function value for function call, got `{f}`");
                                 return None;
                             };
                             let AST::FuncDecl(params, body) = func else {
@@ -328,7 +349,15 @@ impl<'s> Interpreter<'s> {
                         }
                     }
                 } else {
-                    todo!()
+                    let f = self.run_node(func)?;
+                    let Value::Func(func) = f else {
+                        eprintln!("Expected function value for function call, got `{f}`");
+                        return None;
+                    };
+                    let AST::FuncDecl(params, body) = func else {
+                        unreachable!()
+                    };
+                    self.run_function(&args, &params, &body)
                 }
             }
             AST::ListDecl(elems) => {
@@ -340,6 +369,16 @@ impl<'s> Interpreter<'s> {
                 Some(Value::List(eval_elems))
             }
             n => todo!("{:?}", n)
+        }
+    }
+
+    fn insert_variable(&mut self, var_name: &'s str, var_val: &Value<'s>) -> Option<()> {
+        let current_scope = self.get_current_scope();
+        if let Some(_) = current_scope.insert(var_name, var_val.clone()) {
+            eprintln!("error: Redefinition of variable `{var_name}`");
+            None
+        } else {
+            Some(())
         }
     }
 
@@ -362,7 +401,30 @@ impl<'s> Interpreter<'s> {
         &mut self.variables.get_mut(l - 1).unwrap().1
     }
 
-    fn run_block<'ast: 's>(&mut self, block: &'ast AST<'s>) -> Option<Value<'s>> {
+    fn reset_variables(&mut self) {
+        self.variables.clear();
+        self.stack_depth = 0;
+    }
+
+    fn define_intrinsics(&mut self, intrinsics: &'s[(&'static str, AST<'s>)]) {
+        assert!(intrinsics.len() == INTRINSICS.len(), "define_intrinsics() called with unexpected input!");
+        self.reset_variables();
+        assert!(self.variables.is_empty(), "define_intrinsics() called in wrong context!");
+        assert!(self.stack_depth == 0, "define_intrinsics() called in wrong context!");
+        self.variables.push_back((self.stack_depth, HashMap::new()));
+        self.stack_depth = 1;
+        for (name, ast) in intrinsics {
+            let val = match ast {
+                AST::FuncDecl(..) => Value::Func(&ast),
+                AST::Number(..) => todo!(),
+                _ => todo!(), // Unreachable
+            };
+            // is_some() Because Some(()) indicates success, and None indicates duplicate
+            assert!(self.insert_variable(name, &val).is_some());
+        }
+    }
+
+    fn run_program<'ast: 's>(&mut self, block: &'ast AST<'s>) -> Option<Value<'s>> {
         self.run_node(block)
     }
 }
@@ -710,6 +772,24 @@ impl<'s> Lexer<'s> {
     }
 }
 
+fn declare_intrinsics<'s>() -> Vec<(&'static str, AST<'s>)> {
+    let mut decl_intr = Vec::new();
+    macro_rules! empty_fn {
+        () => {
+            AST::FuncDecl(Vec::new(), Box::new(AST::Block(Vec::new())))
+        }
+    }
+    decl_intr.push(("print", empty_fn!()));
+    decl_intr.push(("noa", empty_fn!()));
+    decl_intr.push(("nel", empty_fn!()));
+
+    for i in INTRINSICS {
+        assert!(decl_intr.iter().find(|(n,_)|n==i).is_some(), "Could not find intrinsic `{i}` in declare_intrinsics()!");
+    }
+    assert!(decl_intr.len() == INTRINSICS.len());
+    decl_intr
+}
+
 fn main() {
     let mut args = env::args();
     let _prog_name = args.next().expect("Program must be provided");
@@ -717,15 +797,21 @@ fn main() {
         eprintln!("No input file provided!");
         std::process::exit(1)
     };
+    if !file_input.ends_with(".y") {
+        eprintln!("Expected file with extension `.y`");
+        std::process::exit(1)
+    }
     println!("Reading file `{file_input}`");
+    let intrinsics = declare_intrinsics();
     match fs::read_to_string(file_input) {
         Ok(file) => {
             let mut lexer = Lexer::new(&file);
             let mut parser = Parser::new(&mut lexer);
             let mut interpreter = Interpreter::new();
+            interpreter.define_intrinsics(&intrinsics);
             // TODO: Add Bytecode interpreter? :o
             if let Some(program) = parser.parse_program() {
-                let Some(result) = interpreter.run_block(&program) else {
+                let Some(result) = interpreter.run_program(&program) else {
                     eprintln!("error: Could not interpret the given program.");
                     std::process::exit(1)
                 };

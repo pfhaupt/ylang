@@ -4,12 +4,14 @@
 EP=./target/debug/ylang
 
 all: build
-	${EP} ./ex/intrinsics.txt
-	${EP} ./ex/list.txt
-	${EP} ./ex/list_heavy.txt
-	${EP} ./ex/simple.txt
-	${EP} ./ex/fn.txt
-	${EP} ./ex/test.txt
+
+examples: build
+	${EP} ./ex/intrinsics.y
+	${EP} ./ex/list.y
+	${EP} ./ex/list_heavy.y
+	${EP} ./ex/simple.y
+	${EP} ./ex/fn.y
+	${EP} ./ex/test.y
 
 build:
 	cargo build

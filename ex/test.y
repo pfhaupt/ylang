@@ -18,6 +18,6 @@ let isPrime = f(n) {
   }
   isnt
 }
-let limit = 500
+let limit = 10
 let listSlow = limit*{f(i)if(isPrime(i),i,0)}/f(n)not(eq(n,0))
 let listFast = {limit*f(i)i}/isPrime
