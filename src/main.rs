@@ -2,7 +2,7 @@ use std::fs;
 use std::env;
 use std::collections::{HashMap, VecDeque};
 
-const KEYWORDS: &[&str] = &["let", "f", "while"];
+const KEYWORDS: &[&str] = &["let", "f", "while", "use"];
 const INTRINSICS: &[&str] = &["print", "noa", "nel"];
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -29,7 +29,7 @@ enum Token<'s> {
     Minus,
     Slash,
     Asterisk,
-    Comma
+    Comma,
 }
 
 impl<'s> std::fmt::Display for Token<'s> {
@@ -654,11 +654,18 @@ struct Lexer<'s> {
 
 impl<'s> Lexer<'s> {
     fn new(content: &'s str) -> Self {
-        Self {
-            content,
+        let mut instance = Self {
+            content: "",
             ptr: 0,
-            len: content.len()
-        }
+            len: 0,
+        };
+        instance.load(content);
+        instance
+    }
+    fn load(&mut self, content: &'s str) {
+        self.content = content;
+        self.ptr = 0;
+        self.len = content.len();
     }
     fn peek(&mut self) -> Option<Token<'s>> {
         let save = self.ptr;
@@ -790,6 +797,85 @@ fn declare_intrinsics<'s>() -> Vec<(&'static str, AST<'s>)> {
     decl_intr
 }
 
+struct Preproc<'s, 'p> {
+    lexer: &'p mut Lexer<'s>,
+    import_paths: Vec<&'s str>,
+}
+
+impl<'s, 'p> Preproc<'s, 'p> {
+    fn new(lexer: &'p mut Lexer<'s>) -> Self {
+        Self {
+            lexer,
+            import_paths: Vec::new(),
+        }
+    }
+    fn add_import(&mut self, path: &'s str) {
+        self.import_paths.push(path);
+    }
+    fn process(&mut self, cycle: &mut VecDeque<String>, content: &'s str) -> Option<String> {
+        let mut after = String::with_capacity(content.len());
+        self.lexer.load(content);
+        while let Some(t) = self.lexer.next() {
+            match &t {
+                Token::Keyword("use") => {
+                    let Some(Token::StrLit(filename)) = self.lexer.next() else {
+                        todo!()
+                    };
+                    let mut valid = false;
+                    for path in &self.import_paths {
+                        let mut filepath = format!("{path}/{filename}");
+                        if !filepath.ends_with(".y") {
+                            filepath += ".y";
+                        }
+                        if fs::metadata(&filepath).is_ok() {
+                            let Ok(use_content) = fs::read_to_string(&filepath) else {
+                                todo!() // Unreachable because metadata?
+                            };
+                            let Some(import) = pre_process(cycle, &self.import_paths, &filepath, &use_content) else {
+                                eprintln!("error: Could not import file `{filepath}` used in `use {filename}`");
+                                return None;
+                            };
+                            after.push_str(&import);
+                            valid = true;
+                            break;
+                        }
+                    }
+                    if !valid {
+                        println!("error: Could not import file `{filename}`");
+                        return None;
+                    }
+                },
+                _ => {
+                    after.push_str(&t.to_string());
+                }
+            }
+            after.push(' ');
+        }
+        Some(after)
+    }
+}
+
+fn pre_process(cycle: &mut VecDeque<String>, imports: &Vec<&str>, path: &str, content: &str) -> Option<String> {
+    if cycle.contains(&path.to_string()) {
+        eprintln!("error: Circular import.");
+        eprintln!("note: The cycle is:");
+        for c in cycle {
+            eprintln!("note: {c}");
+        }
+        std::process::exit(1)
+    }
+    cycle.push_back(path.to_string());
+    println!("Reading file `{path}`");
+    let mut lexer = Lexer::new(&content);
+    let mut pp = Preproc::new(&mut lexer);
+    for path in imports {
+        pp.add_import(&path);
+    }
+    let tmp = pp.process(cycle, &content);
+    cycle.pop_back();
+    tmp
+}
+
 fn main() {
     let mut args = env::args();
     let _prog_name = args.next().expect("Program must be provided");
@@ -801,11 +887,29 @@ fn main() {
         eprintln!("Expected file with extension `.y`");
         std::process::exit(1)
     }
-    println!("Reading file `{file_input}`");
+    let mut import_paths = Vec::new();
+    for a in args {
+        if a.starts_with("-I") {
+            import_paths.push(a.strip_prefix("-I").unwrap().to_string());
+        } else {
+            eprintln!("Unexpected argument {a}");
+            std::process::exit(1)
+        }
+    }
+    let mut ip = Vec::new();
+    for i in &import_paths {
+        ip.push(&**i);
+    }
+    // FIXME: Use absolute paths
+    ip.push("./std");
     let intrinsics = declare_intrinsics();
-    match fs::read_to_string(file_input) {
+    match fs::read_to_string(&file_input) {
         Ok(file) => {
-            let mut lexer = Lexer::new(&file);
+            let Some(content) = pre_process(&mut VecDeque::new(), &ip, &file_input, &file) else {
+                eprintln!("error: Could not pre-process file `{file_input}`");
+                std::process::exit(1)
+            };
+            let mut lexer = Lexer::new(&content);
             let mut parser = Parser::new(&mut lexer);
             let mut interpreter = Interpreter::new();
             interpreter.define_intrinsics(&intrinsics);

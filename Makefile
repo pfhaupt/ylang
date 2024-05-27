@@ -12,6 +12,7 @@ examples: build
 	${EP} ./ex/simple.y
 	${EP} ./ex/fn.y
 	${EP} ./ex/test.y
+	${EP} ./ex/use.y
 
 build:
 	cargo build
