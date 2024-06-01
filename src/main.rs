@@ -941,6 +941,7 @@ fn main() {
     }
     // FIXME: Use absolute paths
     ip.push("./std");
+    ip.push(".");
     let intrinsics = declare_intrinsics();
     match fs::read_to_string(&file_input) {
         Ok(file) => {

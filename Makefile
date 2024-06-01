@@ -11,10 +11,11 @@ examples: build
 	${EP} ./ex/list_heavy.y
 	${EP} ./ex/simple.y
 	${EP} ./ex/fn.y
-	${EP} ./ex/test.y
+	${EP} ./ex/prime.y
 	${EP} ./ex/use.y
 	${EP} ./ex/hello.y
 	${EP} ./ex/string.y
+	${EP} ./ex/rule110.y
 
 build:
 	cargo build
